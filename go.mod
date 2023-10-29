@@ -1,4 +1,4 @@
-module zont
+module github.com/dematron/go-zont
 
 go 1.21.2
 
