@@ -1,6 +1,6 @@
-module go-zont
+module zont
 
-go 1.19
+go 1.21.2
 
 require (
 	github.com/hashicorp/go-retryablehttp v0.7.1

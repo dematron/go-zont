@@ -352,11 +352,11 @@ type Device struct {
 			Name   string `json:"name"`
 		} `json:"9"`
 	} `json:"thermostat_ext_modes_config,omitempty"`
-	ThermostatTargetTemps      *ThermostatTargetTemps `json:"thermostat_target_temps,omitempty"`
-	ThermostatExtModesAdvanced bool                   `json:"thermostat_ext_modes_advanced,omitempty"`
-	ThermostatRelayMode        string                 `json:"thermostat_relay_mode,omitempty"`
-	OtGateEnabled              bool                   `json:"ot_gate_enabled,omitempty"`
-	UseInternetWeatherForPza   bool                   `json:"use_internet_weather_for_pza,omitempty"`
+	ThermostatTargetTemps      *map[string]ThermostatTargetTemps `json:"thermostat_target_temps,omitempty"`
+	ThermostatExtModesAdvanced bool                              `json:"thermostat_ext_modes_advanced,omitempty"`
+	ThermostatRelayMode        string                            `json:"thermostat_relay_mode,omitempty"`
+	OtGateEnabled              bool                              `json:"ot_gate_enabled,omitempty"`
+	UseInternetWeatherForPza   bool                              `json:"use_internet_weather_for_pza,omitempty"`
 	Thermometers               []struct {
 		IsAssignedToSlot bool   `json:"is_assigned_to_slot"`
 		Slot             int    `json:"slot"`
@@ -388,14 +388,8 @@ type Device struct {
 }
 
 type ThermostatTargetTemps struct {
-	Num0 struct {
-		Manual bool    `json:"manual"`
-		Temp   float64 `json:"temp"`
-	} `json:"0"`
-	Num1 struct {
-		Manual bool    `json:"manual"`
-		Temp   float64 `json:"temp"`
-	} `json:"1"`
+	Manual bool    `json:"manual"`
+	Temp   float64 `json:"temp"`
 }
 
 type LoadDataResponse struct {
@@ -417,6 +411,46 @@ type LoadDataResponse struct {
 			} `json:"temperature,omitempty"`
 		} `json:"timings,omitempty"`
 	} `json:"responses,omitempty"`
+}
+
+// https://zont-online.ru/api/docs/#thermostat_work
+type LoadDataThermostatWorkResponse struct {
+	Ok        bool `json:"ok"`
+	Responses []struct {
+		DeviceID       int  `json:"device_id"`
+		Ok             bool `json:"ok"`
+		TimeTruncated  bool `json:"time_truncated"`
+		ThermostatWork struct {
+			ThermostatMode [][]int     `json:"thermostat_mode"`
+			DhwT           [][]float64 `json:"dhw_t"`
+			Power          [][]any     `json:"power"`
+			Fail           [][]any     `json:"fail"`
+			Gate           [][]any     `json:"gate"`
+			Ot             struct {
+				Cs  [][]int     `json:"cs"`
+				Bt  [][]int     `json:"bt"`
+				Dt  [][]int     `json:"dt"`
+				Rwt [][]int     `json:"rwt"`
+				Rml [][]int     `json:"rml"`
+				Wp  [][]float64 `json:"wp"`
+				S   [][]any     `json:"s"`
+			} `json:"ot"`
+			Zones struct {
+				Num1 struct {
+					TargetTemp [][]int `json:"target_temp"`
+					Worktime   [][]int `json:"worktime"`
+				} `json:"1"`
+			} `json:"zones"`
+			BoilerWorkTime [][]int `json:"boiler_work_time"`
+			TargetTemp     [][]int `json:"target_temp"`
+		} `json:"thermostat_work"`
+		Timings struct {
+			ThermostatWork struct {
+				Wall float64 `json:"wall"`
+				Proc float64 `json:"proc"`
+			} `json:"thermostat_work"`
+		} `json:"timings"`
+	} `json:"responses"`
 }
 
 // NewClient return new client
@@ -555,6 +589,28 @@ func (cl *Client) LoadData(data interface{}) *LoadDataResponse {
 	return &loadData
 }
 
+// LoadDataThermostatWork return device information and metrics based on data interface
+func (cl *Client) LoadDataThermostatWork(data interface{}) *LoadDataThermostatWorkResponse {
+	if len(cl.AuthTokenResponse.Token) < 1 {
+		ContextLogger.Infoln("AuthToken not exist!")
+		return nil
+	}
+
+	method := "load_data"
+	uri := baseUrl + method
+
+	body := cl.PostRequestHandler(data, uri, false)
+
+	loadData := LoadDataThermostatWorkResponse{}
+
+	err := json.Unmarshal(body, &loadData)
+	if err != nil {
+		ContextLogger.Error(err)
+	}
+
+	return &loadData
+}
+
 // GetCurrentTemp return current temperature from first thermometer on device with deviceId
 func (cl *Client) GetCurrentTemp(deviceId int) (temp float64) {
 	dataRequest := struct {
@@ -567,7 +623,7 @@ func (cl *Client) GetCurrentTemp(deviceId int) (temp float64) {
 	dataRequest.DeviceID = deviceId
 	dataRequest.DataTypes = append(dataRequest.DataTypes, "temperature")
 	dataRequest.MaxTime = time.Now().Unix()
-	dataRequest.MinTime = time.Now().Add(-90 * time.Second).Unix()
+	dataRequest.MinTime = time.Now().Add(-180 * time.Second).Unix()
 
 	dataLoad := struct {
 		Requests []struct {
@@ -580,27 +636,57 @@ func (cl *Client) GetCurrentTemp(deviceId int) (temp float64) {
 
 	dataLoad.Requests = append(dataLoad.Requests, dataRequest)
 
-	loadResp := cl.LoadData(dataLoad)
+	loadResp := &LoadDataResponse{}
+	loadResp = cl.LoadData(dataLoad)
 	for k := range loadResp.Responses[0].Temperature {
 		return loadResp.Responses[0].Temperature[k].Temperature[0][1]
 	}
 	return temp
 }
 
-// SetTargetTemp send temperature update request based on deviceId and targetTemp
-func (cl *Client) SetTargetTemp(deviceId int, targetTemp float64) error {
-	// Update data
-	data := struct {
-		DeviceID              int `json:"device_id"`
-		ThermostatTargetTemps struct {
-			Num1 struct {
-				Manual bool    `json:"manual,omitempty"`
-				Temp   float64 `json:"temp"`
-			} `json:"1"`
-		} `json:"thermostat_target_temps"`
+// GetCurrentHotWaterTemp return current hot water temperature
+func (cl *Client) GetCurrentHotWaterTemp(deviceId int) (temp float64) {
+	dataRequest := struct {
+		DeviceID  int      `json:"device_id"`
+		DataTypes []string `json:"data_types"`
+		MinTime   int64    `json:"mintime"`
+		MaxTime   int64    `json:"maxtime"`
 	}{}
+
+	dataRequest.DeviceID = deviceId
+	dataRequest.DataTypes = append(dataRequest.DataTypes, "thermostat_work")
+	dataRequest.MaxTime = time.Now().Unix()
+	dataRequest.MinTime = time.Now().Add(-180 * time.Second).Unix()
+
+	dataLoad := struct {
+		Requests []struct {
+			DeviceID  int      `json:"device_id"`
+			DataTypes []string `json:"data_types"`
+			MinTime   int64    `json:"mintime"`
+			MaxTime   int64    `json:"maxtime"`
+		} `json:"requests"`
+	}{}
+
+	dataLoad.Requests = append(dataLoad.Requests, dataRequest)
+
+	loadResp := cl.LoadDataThermostatWork(dataLoad)
+	return loadResp.Responses[0].ThermostatWork.DhwT[0][1]
+}
+
+type ThermostatData struct {
+	DeviceID              int                              `json:"device_id"`
+	ThermostatTargetTemps map[string]ThermostatTargetTemps `json:"thermostat_target_temps"`
+}
+
+// SetTargetTemp send temperature update request based on deviceId and targetTemp
+func (cl *Client) SetTargetTemp(deviceId int, termostatid string, targetTemp float64) error {
+	// Update data
+	data := ThermostatData{}
 	data.DeviceID = deviceId
-	data.ThermostatTargetTemps.Num1.Temp = targetTemp
+	data.ThermostatTargetTemps = map[string]ThermostatTargetTemps{
+		termostatid: {Manual: true, Temp: targetTemp},
+	}
+
 	err := cl.UpdateDevice(data)
 	if err != nil {
 		ContextLogger.Error(err)
